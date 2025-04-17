@@ -32,19 +32,19 @@
 ## 📸 Screenshots
 
 ### 🔹 Upload & Clean Data
-![Upload & Clean](screenshots/upload_clean.png)
+![Upload & Clean](screenshots/upload_clean.PNG)
 
 ### 🔹 EDA Summary
-![EDA](screenshots/eda_summary.png)
+![EDA](screenshots/eda_summary.PNG)
+
+### 🔹 Pre-Processing
+![Pre-Processing](screenshots/pre_processing.PNG)
 
 ### 🔹 Model Training
-![Model Training](screenshots/model_training.png)
+![Model Training](screenshots/model_training.PNG)
 
-### 🔹 SHAP Force Plot
-![SHAP Force Plot](screenshots/shap_force.png)
-
-### 🔹 EBM Global Explanation
-![EBM Global](screenshots/ebm_global.png)
+### 🔹 LIME Explanation
+![LIME](screenshots/lime_explain.PNG)
 
 > ℹ️ Store these images in a `/screenshots` folder in your GitHub repo.
 

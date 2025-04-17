@@ -36,6 +36,8 @@ import zipfile
 import tempfile
 import plotly.io as pio
 from datetime import datetime
+import plotly.graph_objects as go
+import altair as alt
 
 try:
     from interpret.glassbox import ExplainableBoostingClassifier, ExplainableBoostingRegressor
@@ -91,15 +93,17 @@ st.title("AutoNexus: Automate. Explore. Model. Explain.")
 st.markdown(
     """
 
-    Whether you're prepping data for machine learning or just making sense of a new dataset — this app gives you an intuitive, powerful interface to handle it all.
+    #### AutoNexus: Automate. Explore. Model. Explain.
 
-    **Clean. Format. Explore. Prep — in one seamless flow:**
-    - Smart data cleaning  
-    - Auto date handling  
-    - Visual insights  
-    - Encoding & scaling made simple
-    
-    _Give it a spin — your data deserves better._ 
+    Whether you're training your next predictive model or making sense of messy, raw data — **AutoNexus** delivers a seamless, no-code pipeline from upload to insights.
+
+    Built for analysts, data scientists, and anyone who works with tabular data, AutoNexus brings together:
+
+    - Smart preprocessing: Missing value handling, scaling, encoding, and more  
+    - Visual EDA: Histograms, correlations, distributions — instantly  
+    - Model training: From classic regressors to tree-based and interpretable models  
+    - Explainability made easy: SHAP, LIME, and EBM at your fingertips  
+    - One-click model downloads and in-browser reporting 
 
     """
 )
@@ -931,161 +935,148 @@ with tab4:
         elif df_model[target_col].nunique() > 15:
             task_type = "Regression"
         else:
-            task_type = st.radio("Select Task Type:", ["Classification", "Regression", "Clustering"])
+            task_type = st.radio("Select Task Type:", ["Classification", "Regression"])
 
         st.info(f"Detected Task Type: {task_type}")
 
-        if task_type == "Clustering":
-            model_choice = st.selectbox("Select Clustering Model", ["KMeans"])
-            num_clusters = st.slider("Number of Clusters", 2, 10, 3)
+        X = df_model.drop(columns=[target_col])
+        y = df_model[target_col]
 
-            if st.button("Train Clustering Model"):
-                model = KMeans(n_clusters=num_clusters, random_state=42)
-                model.fit(df_model)
-                df_model["Cluster"] = model.labels_
-                st.success("KMeans clustering applied.")
-                st.dataframe(df_model.sample(50))
-                st.write("Inertia (Within-cluster sum of squares):", model.inertia_)
-
+        if task_type == "Classification" and y.dtype in ['object', 'category', 'string']:
+            y = LabelEncoder().fit_transform(y)
         else:
-            X = df_model.drop(columns=[target_col])
-            y = df_model[target_col]
+            y = y.to_numpy().squeeze()
 
-            if task_type == "Classification" and y.dtype in ['object', 'category', 'string']:
-                y = LabelEncoder().fit_transform(y)
-            else:
-                y = y.to_numpy().squeeze()
+        test_size = st.slider("Test Set Size (%)", 10, 90, 20)
+        train_size = 100 - test_size
+        st.write(f"Train Size: {train_size}%, Test Size: {test_size}%")
 
-            test_size = st.slider("Test Set Size (%)", 10, 90, 20)
-            train_size = 100 - test_size
-            st.write(f"Train Size: {train_size}%, Test Size: {test_size}%")
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size / 100, random_state=42)
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size / 100, random_state=42)
-
-            if task_type == "Classification":
-                classifiers = [
-                    "Logistic Regression", "Decision Tree Classifier", "Random Forest Classifier",
-                    "KNN", "Naive Bayes", "GaussianNB"
-                ]
-                if xgb:
-                    classifiers.insert(3, "XGBoost Classifier")
-                if ExplainableBoostingClassifier:
-                    classifiers.append("Explainable Boosting Classifier (EBM)")
-                model_choice = st.selectbox("Select Classification Model", classifiers)
-            else:
-                regressors = [
-                    "Linear Regression", "Lasso", "Ridge"
-                ]
-                if xgb:
-                    regressors.append("XGBoost Regressor")
-                if ExplainableBoostingRegressor:
-                    regressors.append("Explainable Boosting Regressor (EBM)")
-                model_choice = st.selectbox("Select Regression Model", regressors)
-
-            # Optional enhancement: allow users to choose interaction count for EBM
-            interaction_count = 10
-            if "Boosting" in model_choice:
-                interaction_count = st.slider("Max Interaction Terms (EBM only)", 0, 50, 10)
-
-            model_map = {
-                "Linear Regression": LinearRegression(),
-                "Lasso": Lasso(),
-                "Ridge": Ridge(),
-                "Logistic Regression": LogisticRegression(max_iter=1000),
-                "Decision Tree Classifier": DecisionTreeClassifier(),
-                "Random Forest Classifier": RandomForestClassifier(random_state=42),
-                "KNN": KNeighborsClassifier(),
-                "Naive Bayes": GaussianNB(),
-                "GaussianNB": GaussianNB()
-            }
-
+        if task_type == "Classification":
+            classifiers = [
+                "Logistic Regression", "Decision Tree Classifier", "Random Forest Classifier",
+                "KNN", "Naive Bayes", "GaussianNB"
+            ]
             if xgb:
-                model_map["XGBoost Classifier"] = xgb.XGBClassifier()
-                model_map["XGBoost Regressor"] = xgb.XGBRegressor()
+                classifiers.insert(3, "XGBoost Classifier")
             if ExplainableBoostingClassifier:
-                model_map["Explainable Boosting Classifier (EBM)"] = ExplainableBoostingClassifier(interactions=interaction_count, random_state=42)
+                classifiers.append("Explainable Boosting Classifier (EBM)")
+            model_choice = st.selectbox("Select Classification Model", classifiers)
+        else:
+            regressors = [
+                "Linear Regression", "Lasso", "Ridge"
+            ]
+            if xgb:
+                regressors.append("XGBoost Regressor")
             if ExplainableBoostingRegressor:
-                model_map["Explainable Boosting Regressor (EBM)"] = ExplainableBoostingRegressor(interactions=interaction_count, random_state=42)
+                regressors.append("Explainable Boosting Regressor (EBM)")
+            model_choice = st.selectbox("Select Regression Model", regressors)
 
-            model = model_map.get(model_choice)
+        # Optional enhancement: allow users to choose interaction count for EBM
+        interaction_count = 10
+        if "Boosting" in model_choice:
+            interaction_count = st.slider("Max Interaction Terms (EBM only)", 0, 50, 10)
 
-            if st.button("Train Model"):
-                try:
-                    if "XGBoost" in model_choice:
-                        X_train = clean_column_names(X_train.astype(int))
-                        X_test = clean_column_names(X_test.astype(int))
+        model_map = {
+            "Linear Regression": LinearRegression(),
+            "Lasso": Lasso(),
+            "Ridge": Ridge(),
+            "Logistic Regression": LogisticRegression(max_iter=1000),
+            "Decision Tree Classifier": DecisionTreeClassifier(),
+            "Random Forest Classifier": RandomForestClassifier(random_state=42),
+            "KNN": KNeighborsClassifier(),
+            "Naive Bayes": GaussianNB(),
+            "GaussianNB": GaussianNB()
+        }
 
-                    model.fit(X_train, y_train)
-                    y_pred = model.predict(X_test)
+        if xgb:
+            model_map["XGBoost Classifier"] = xgb.XGBClassifier()
+            model_map["XGBoost Regressor"] = xgb.XGBRegressor()
+        if ExplainableBoostingClassifier:
+            model_map["Explainable Boosting Classifier (EBM)"] = ExplainableBoostingClassifier(interactions=interaction_count, random_state=42)
+        if ExplainableBoostingRegressor:
+            model_map["Explainable Boosting Regressor (EBM)"] = ExplainableBoostingRegressor(interactions=interaction_count, random_state=42)
 
-                    st.success(f"{model_choice} trained successfully!")
-                    st.markdown("### Model Evaluation")
+        model = model_map.get(model_choice)
 
-                    if task_type == "Classification":
-                        metrics = {
-                            "Accuracy": accuracy_score(y_test, y_pred),
-                            "F1 Score": f1_score(y_test, y_pred, zero_division=0),
-                            "Precision": precision_score(y_test, y_pred, zero_division=0),
-                            "Recall": recall_score(y_test, y_pred, zero_division=0),
-                            "MCC": matthews_corrcoef(y_test, y_pred)
-                        }
-                        for metric, score in metrics.items():
-                            st.write(f"**{metric}:** {score:.3f}")
+        if st.button("Train Model"):
+            try:
+                if "XGBoost" in model_choice:
+                    X_train = clean_column_names(X_train.astype(int))
+                    X_test = clean_column_names(X_test.astype(int))
 
-                        with st.expander("Full Classification Report"):
-                            report_text = classification_report(y_test, y_pred, zero_division=0)
-                            st.code(report_text, language="text")
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
 
-                        with st.expander("Confusion Matrix", expanded=False):
-                            try:
-                                cm = confusion_matrix(y_test, y_pred)
-                                labels = unique_labels(y_test, y_pred)
+                st.success(f"{model_choice} trained successfully!")
+                st.markdown("### Model Evaluation")
 
-                                col1, col2 = st.columns([1, 2])
-                                with col1:
-                                    fig, ax = plt.subplots(figsize=(4, 3))
-                                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-                                    ax.set_title("Confusion Matrix")
-                                    ax.set_xlabel("Predicted Labels")
-                                    ax.set_ylabel("True Labels")
-                                    st.pyplot(fig)
-                                with col2:
-                                    st.markdown("**Confusion Matrix Explanation**")
-                                    st.markdown("""
-                                        - **Rows** → Actual values  
-                                        - **Columns** → Predicted values  
-                                        - Diagonal → Correct predictions  
-                                        - Off-diagonal → Errors
-                                    """)
+                if task_type == "Classification":
+                    metrics = {
+                        "Accuracy": accuracy_score(y_test, y_pred),
+                        "F1 Score": f1_score(y_test, y_pred, zero_division=0),
+                        "Precision": precision_score(y_test, y_pred, zero_division=0),
+                        "Recall": recall_score(y_test, y_pred, zero_division=0),
+                        "MCC": matthews_corrcoef(y_test, y_pred)
+                    }
+                    for metric, score in metrics.items():
+                        st.write(f"**{metric}:** {score:.3f}")
 
-                            except Exception as e:
-                                st.warning(f"Confusion matrix could not be displayed: {e}")
+                    with st.expander("Full Classification Report"):
+                        report_text = classification_report(y_test, y_pred, zero_division=0)
+                        st.code(report_text, language="text")
 
-                    else:
-                        mae = mean_absolute_error(y_test, y_pred)
-                        mse = mean_squared_error(y_test, y_pred)
-                        rmse = mean_squared_error(y_test, y_pred, squared=False)
-                        r2 = r2_score(y_test, y_pred)
+                    with st.expander("Confusion Matrix", expanded=False):
+                        try:
+                            cm = confusion_matrix(y_test, y_pred)
+                            labels = unique_labels(y_test, y_pred)
 
-                        st.write(f"MAE: {mae:.2f}")
-                        st.write(f"MSE: {mse:.2f}")
-                        st.write(f"RMSE: {rmse:.2f}")
-                        st.write(f"R² Score: {r2:.2f}")
+                            col1, col2 = st.columns([1, 2])
+                            with col1:
+                                fig, ax = plt.subplots(figsize=(4, 3))
+                                sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+                                ax.set_title("Confusion Matrix")
+                                ax.set_xlabel("Predicted Labels")
+                                ax.set_ylabel("True Labels")
+                                st.pyplot(fig)
+                            with col2:
+                                st.markdown("**Confusion Matrix Explanation**")
+                                st.markdown("""
+                                    - **Rows** → Actual values  
+                                    - **Columns** → Predicted values  
+                                    - Diagonal → Correct predictions  
+                                    - Off-diagonal → Errors
+                                """)
 
-                    st.markdown("### Prediction Preview")
-                    pred_df = pd.DataFrame({
-                        "Actual": y_test[:20],
-                        "Predicted": y_pred[:20]
-                    })
-                    st.dataframe(pred_df)
+                        except Exception as e:
+                            st.warning(f"Confusion matrix could not be displayed: {e}")
 
-                    buffer = io.BytesIO()
-                    joblib.dump(model, buffer)
-                    model_filename = model_choice.replace(" ", "_").lower() + "_model.pkl"
-                    st.download_button("Download Trained Model", buffer.getvalue(), file_name=model_filename)
+                else:
+                    mae = mean_absolute_error(y_test, y_pred)
+                    mse = mean_squared_error(y_test, y_pred)
+                    rmse = mean_squared_error(y_test, y_pred, squared=False)
+                    r2 = r2_score(y_test, y_pred)
 
-                except Exception as e:
-                    st.error(f"Training failed: {e}")
+                    st.write(f"MAE: {mae:.2f}")
+                    st.write(f"MSE: {mse:.2f}")
+                    st.write(f"RMSE: {rmse:.2f}")
+                    st.write(f"R² Score: {r2:.2f}")
+
+                st.markdown("### Prediction Preview")
+                pred_df = pd.DataFrame({
+                    "Actual": y_test[:20],
+                    "Predicted": y_pred[:20]
+                })
+                st.dataframe(pred_df)
+
+                buffer = io.BytesIO()
+                joblib.dump(model, buffer)
+                model_filename = model_choice.replace(" ", "_").lower() + "_model.pkl"
+                st.download_button("Download Trained Model", buffer.getvalue(), file_name=model_filename)
+
+            except Exception as e:
+                st.error(f"Training failed: {e}")
 
 
 
@@ -1140,7 +1131,7 @@ with tab5:
                     name = term_names[i]
                     is_interaction = isinstance(name, tuple)
                     title = "Interaction" if is_interaction else "Feature"
-                    st.markdown(f"### 🔍 {title} Plot {i + 1}: {name}")
+                    st.markdown(f"### {title} Plot {i + 1}: {name}")
                     st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("Only 1 plot generated — possibly no interaction terms detected.")
@@ -1162,14 +1153,25 @@ with tab5:
 
             st.markdown("#### SHAP Summary - Bar")
             fig, ax = plt.subplots(figsize=(8, 5))
-            shap.plots.bar(shap_values, max_display=10, show=False, ax=ax)
+            shap.plots.bar(shap_values, max_display=10, show=False)
             st.pyplot(fig)
 
-            st.markdown("#### SHAP - Beeswarm")
-            fig, ax = plt.subplots(figsize=(10, 5))
-            shap.plots.beeswarm(shap_values, max_display=20, show=False)
-            st.pyplot(plt.gcf())
+            st.markdown("#### SHAP - Waterfall Plot")
+            try:
+                idx = st.slider("Select row index for Waterfall", 0, len(X) - 1, 0, key="shap_waterfall_idx")
 
+                # Ensure SHAP values are from Explainer and have .values and .data
+                if hasattr(shap_values, "values") and hasattr(shap_values, "data"):
+                    plt.clf()
+                    shap.plots.waterfall(shap_values[idx], show=False)
+                    st.pyplot(plt.gcf())
+                else:
+                    st.warning("SHAP values are not explainer-based (may not support waterfall).")
+
+            except Exception as e:
+                st.error(f"SHAP waterfall plot failed: {e}")
+            
+            
             st.markdown("#### SHAP Force Plot")
             idx = st.slider("Select row index", 0, len(X) - 1, 0, key="shap_force_idx")
             shap.initjs()
