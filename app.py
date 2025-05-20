@@ -92,9 +92,13 @@ if "cleaned_df" not in st.session_state:
 if "original_df" not in st.session_state:
     st.session_state.original_df = None
 
+if not st.session_state["started"]:
+    st.session_state["active_tab"] = 0
+
+
 
 # --------- LANDING PAGE ----------
-if not st.session_state["started"]:
+if not st.session_state["started"] and st.session_state.active_tab == 0:
     st.markdown(
         """
         <div style='text-align: center; padding-top: 150px;'>
@@ -129,6 +133,7 @@ if st.session_state["started"]:
     with col2:
         if st.button("Home"):
             st.session_state["started"] = False
+            st.session_state["active_tab"] = 0
             st.rerun()
 
 # -------- MAIN APP WITH TABS --------
@@ -171,6 +176,7 @@ if st.session_state.active_tab == 0:
 
         st.session_state["df"] = df
         st.session_state["cleaned_df"] = df.copy()
+        st.session_state["original_df"] = df.copy()
 
         # Warn if the dataset is large
         if df.shape[0] > 5000:
@@ -227,7 +233,7 @@ if st.session_state.active_tab == 0:
                 ])
 
                 keep_option = st.selectbox("Keep which duplicate?", ["first", "last", "none"])
-                keep_value = None if keep_option == "none" else keep_option
+                keep_value = False if keep_option == "none" else keep_option
 
                 if dup_mode == "Remove exact duplicates (all columns)":
                     if st.button("Remove Duplicates"):
@@ -240,12 +246,30 @@ if st.session_state.active_tab == 0:
                         df_cleaned.drop_duplicates(subset=subset_cols, keep=keep_value, inplace=True)
                         after = df_cleaned.shape[0]
                         st.success(f"Removed {before - after} duplicates based on selected columns.")
+                
+            
 
         elif cleaning_task == "Drop Unnecessary Columns":
-            cols_to_drop = st.multiselect("Select columns to drop:", df_cleaned.columns)
-            if cols_to_drop and st.button("Drop Selected Columns"):
-                df_cleaned.drop(columns=cols_to_drop, inplace=True)
-                st.success(f"Dropped: {', '.join(cols_to_drop)}. New shape: {df_cleaned.shape}")
+            cols_to_drop = st.multiselect("Select columns to drop:", df_cleaned.columns, key = "drop_cols") 
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if cols_to_drop and st.button("Drop Selected Columns"):
+                    df_cleaned.drop(columns=cols_to_drop, inplace=True)
+                    st.session_state["cleaned_df"] = df_cleaned.copy()  # save updated df
+                    st.success(f"Dropped: {', '.join(cols_to_drop)}. New shape: {df_cleaned.shape}")
+                    st.rerun()
+
+            with col2:
+                if st.button("Reset Drop Action"):
+                    if "drop_cols" in st.session_state:
+                        del st.session_state["drop_cols"]
+
+                    # ❗ Reset df_cleaned to the original uploaded dataset
+                    if "df" in st.session_state:
+                        st.session_state["cleaned_df"] = st.session_state["df"].copy()
+
+                    st.rerun()
 
         elif cleaning_task == "Rename Columns":
             st.markdown("Edit the column names below:")
@@ -254,9 +278,23 @@ if st.session_state.active_tab == 0:
                 new_name = st.text_input(f"Rename `{col}` to:", value=col, key=f"rename_{col}")
                 if new_name and new_name != col:
                     rename_map[col] = new_name
-            if rename_map and st.button("Apply Renaming"):
-                df_cleaned.rename(columns=rename_map, inplace=True)
-                st.success("Renaming applied.")
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if rename_map and st.button("Apply Renaming"):
+                    df_cleaned.rename(columns=rename_map, inplace=True)
+                    st.session_state["cleaned_df"] = df_cleaned.copy()
+                    st.success("Renaming applied.")
+
+            with col2:
+                if st.button("Reset Renaming"):
+                    for col in df_cleaned.columns:
+                        rename_key = f"rename_{col}"
+                        if rename_key in st.session_state:
+                            del st.session_state[rename_key]
+                    if "df" in st.session_state:
+                        st.session_state["cleaned_df"] = st.session_state["df"].copy()
+                    st.rerun()
 
         elif cleaning_task == "Standardize Null-Like Text":
             text_cols = [col for col in df_cleaned.columns if df_cleaned[col].dtype == 'object' or df_cleaned[col].dtype.name == 'string']
@@ -331,13 +369,59 @@ elif st.session_state.active_tab == 1:
         st.dataframe(df_cleaned.dtypes.astype(str).rename("Data Type"))
 
         # 🔹 Missing Value Summary
-        st.subheader("Missing Values")
-        missing = df_cleaned.isnull().sum()
-        missing = missing[missing > 0]
-        if not missing.empty:
-            st.dataframe(missing.rename("Missing Values"))
-        else:
-            st.success("No missing values found in the dataset.")
+        st.subheader("Handle Missing Values by Column")
+
+        df_cleaned = st.session_state.get("cleaned_df", None)
+
+        if df_cleaned is not None:
+            # Get columns with missing values
+            missing = df_cleaned.isnull().sum()
+            missing = missing[missing > 0]
+
+            if not missing.empty:
+                st.write("Here’s a summary of missing values:")
+                st.dataframe(missing.rename("Missing Values"))
+
+                for col in missing.index:
+                    col_dtype = df_cleaned[col].dtype
+                    st.markdown(f"#### {col} ({col_dtype})")
+
+                    # Show sample values
+                    st.write("Example values:", df_cleaned[col].dropna().unique()[:5])
+
+                    if pd.api.types.is_numeric_dtype(df_cleaned[col]):
+                        strategy = st.selectbox(f"Choose strategy for `{col}`",
+                                                ["Fill with mean", "Fill with median", "Drop rows (only if missing in this column)"],
+                                                key=f"strat_{col}")
+                        if st.button(f"Apply to `{col}`", key=f"btn_{col}"):
+                            if strategy == "Fill with mean":
+                                df_cleaned[col].fillna(df_cleaned[col].mean(), inplace=True)
+                            elif strategy == "Fill with median":
+                                df_cleaned[col].fillna(df_cleaned[col].median(), inplace=True)
+                            elif strategy == "Drop rows (only if missing in this column)":
+                                df_cleaned.dropna(subset=[col], inplace=True)
+                            st.success(f"Missing values in `{col}` handled with **{strategy}**.")
+                    else:
+                        strategy = st.selectbox(f"Choose strategy for `{col}`",
+                                                ["Fill with mode", "Fill with 'Unknown'", "Drop rows (only if missing in this column)"],
+                                                key=f"strat_{col}")
+                        if st.button(f"Apply to `{col}`", key=f"btn_{col}"):
+                            if strategy == "Fill with mode":
+                                df_cleaned[col].fillna(df_cleaned[col].mode()[0], inplace=True)
+                            elif strategy == "Fill with 'Unknown'":
+                                df_cleaned[col].fillna("Unknown", inplace=True)
+                            elif strategy == "Drop rows (only if missing in this column)":
+                                df_cleaned.dropna(subset=[col], inplace=True)
+                            st.success(f"Missing values in `{col}` handled with **{strategy}**.")
+
+                # Update session state
+                st.session_state["cleaned_df"] = df_cleaned
+
+            else:
+                st.success("No missing values found in the dataset.")
+
+
+
 
         # 🔹 Categorical and Numerical Columns
         st.subheader("Column Breakdown")
@@ -470,455 +554,352 @@ elif st.session_state.active_tab == 1:
 
 # ---- Tab 2 ----
 elif st.session_state.active_tab == 2:
-    
-    # Place your tab logic here
-    #st.subheader("Data Preprocessing")
 
-    df_cleaned = get_cleaned_df_copy()
+    # 🧠 Start Tab 2 logic
+    df_working = st.session_state["cleaned_df"].copy()
 
-    if df_cleaned is None:
-        st.warning("Upload and clean dataset to enable Pre-Processing.")
-    else:
-        # -------------------------------
-        # Handle Missing Values
-        # -------------------------------
-        with st.expander("Handle Missing Values", expanded=False):
-            missing_option = st.selectbox(
-                "Choose a missing value strategy:",
-                ["No Action", "Drop rows with missing values", "Impute missing values"]
-            )
+    # ✅ Place this message here — and ONLY here:
+    st.info("You're working on a preview copy of the data. No changes are permanent until you click 'Apply All Preprocessing Steps'.")
 
-            if missing_option == "Drop rows with missing values":
-                df_cleaned.dropna(inplace=True)
-                after_shape = df_cleaned.shape
-                st.success(f"Rows with missing values dropped. Shape - {after_shape}")
+    # -------------------------------
+    # Feature Scaling
+    # -------------------------------
+    with st.expander("Feature Scaling", expanded=False):
+        scaling_option = st.selectbox("Choose a scaling method:", [
+            "No Action", "StandardScaler", "MinMaxScaler", "RobustScaler", "MaxAbsScaler", "Normalizer"
+        ], key="scaling_option")
 
-            elif missing_option == "Impute missing values":
-                impute_method = st.radio("Select imputation method:", ["Mean", "Median", "Mode"])
-                try:
-                    for col in df_cleaned.columns:
-                        if df_cleaned[col].isnull().sum() > 0:
-                            if df_cleaned[col].dropna().shape[0] == 0:
-                                st.warning(f"Column `{col}` has only missing values. Skipping imputation.")
-                                continue
-                            if is_numeric_dtype(df_cleaned[col]):
-                                if impute_method == "Mean":
-                                    val = df_cleaned[col].mean()
-                                    if is_integer_dtype(df_cleaned[col]):
-                                        val = int(round(val))
-                                    df_cleaned[col] = df_cleaned[col].fillna(val)
-                                elif impute_method == "Median":
-                                    val = df_cleaned[col].median()
-                                    if is_integer_dtype(df_cleaned[col]):
-                                        val = int(round(val))
-                                    df_cleaned[col] = df_cleaned[col].fillna(val)
-                                elif impute_method == "Mode":
-                                    val = df_cleaned[col].mode()[0]
-                                    df_cleaned[col] = df_cleaned[col].fillna(val)
-                            else:
-                                val = df_cleaned[col].mode()[0]
-                                df_cleaned[col] = df_cleaned[col].fillna(val)
-                    st.success(f"Missing values imputed using {impute_method.lower()}.")
-                except Exception as e:
-                    st.error(f"Imputation failed: {str(e)}")
+        try:
+            if scaling_option != "No Action":
+                scaler_map = {
+                    "StandardScaler": StandardScaler(),
+                    "MinMaxScaler": MinMaxScaler(),
+                    "RobustScaler": RobustScaler(),
+                    "MaxAbsScaler": MaxAbsScaler(),
+                    "Normalizer": Normalizer()
+                }
+                scaler = scaler_map[scaling_option]
+                numeric_cols = [col for col in df_working.columns if is_numeric_dtype(df_working[col])]
+                if numeric_cols:
+                    df_working[numeric_cols] = scaler.fit_transform(df_working[numeric_cols])
+                    st.success(f"{scaling_option} applied to numeric columns.")
+                    st.dataframe(df_working.head())
+                else:
+                    st.warning("No numeric columns found to scale.")
+        except Exception as e:
+            st.error(f"Scaling failed: {e}")
 
-            # ✅ Show missing value summary after handling
-            st.markdown("###### Missing Values After Handling")
-            missing_after = df_cleaned.isnull().sum()
-            missing_percent_after = (missing_after / len(df_cleaned)) * 100
-            missing_df_after = pd.DataFrame({
-                "Missing Values": missing_after,
-                "Percent (%)": missing_percent_after
-            })
-            missing_df_after = missing_df_after[missing_df_after["Missing Values"] > 0]
+    # -------------------------------
+    # Categorical Encoding
+    # -------------------------------
+    with st.expander("Categorical Encoding", expanded=False):
+        cat_cols = [col for col in df_working.columns if is_object_dtype(df_working[col])
+                    or isinstance(df_working[col].dtype, pd.CategoricalDtype)
+                    or df_working[col].dtype.name == "string"]
 
-            if not missing_df_after.empty:
-                st.dataframe(missing_df_after.astype(str))
-            else:
-                st.success("No missing values remaining in the cleaned dataset!")
+        high_card_cols = [col for col in cat_cols if df_working[col].nunique() > 50]
+        if high_card_cols:
+            st.warning(f"High-cardinality columns: {', '.join(high_card_cols)}. Consider Label Encoding instead of One-Hot.")
 
-        if df_cleaned is not None:
-            st.session_state.cleaned_df = df_cleaned.copy()
-
-        # -------------------------------
-        # Feature Scaling
-        # -------------------------------
-        with st.expander("Feature Scaling", expanded=False):
-            scaling_option = st.selectbox("Choose a scaling method:", [
-                "No Action", "StandardScaler", "MinMaxScaler", "RobustScaler", "MaxAbsScaler", "Normalizer"])
+        if not cat_cols:
+            st.info("No categorical columns detected.")
+        else:
+            encoding_type = st.selectbox("Encoding method:", ["No Action", "Label Encoding", "Ordinal Encoding", "One-Hot Encoding"], key="encoding_type")
+            selected_cols = st.multiselect("Columns to encode:", cat_cols, key="encoding_cols")
 
             try:
-                if scaling_option != "No Action":
-                    scaler_map = {
-                        "StandardScaler": StandardScaler(),
-                        "MinMaxScaler": MinMaxScaler(),
-                        "RobustScaler": RobustScaler(),
-                        "MaxAbsScaler": MaxAbsScaler(),
-                        "Normalizer": Normalizer()
-                    }
-                    scaler = scaler_map[scaling_option]
-                    numeric_cols = [col for col in df_cleaned.columns if is_numeric_dtype(df_cleaned[col])]
-                    if numeric_cols:
-                        df_cleaned[numeric_cols] = scaler.fit_transform(df_cleaned[numeric_cols])
-                        st.success(f"Applied {scaling_option} to numeric columns.")
-                        st.markdown("#### Preview After Scaling")
-                        st.dataframe(df_cleaned.head())
-                    else:
-                        st.warning("No numeric columns found for scaling.")
-            except Exception as e:
-                st.error(f"Scaling failed: {str(e)}")
-            
-            if df_cleaned is not None:
-                st.session_state.cleaned_df = df_cleaned.copy()
+                for col in selected_cols:
+                    if is_numeric_dtype(df_working[col]):
+                        st.warning(f"Column {col} appears already numeric. Skipping.")
+                        continue
 
-        # -------------------------------
-        # Categorical Encoding
-        # -------------------------------
-        with st.expander("Categorical Encoding", expanded=False):
-            cat_cols = [col for col in df_cleaned.columns if is_object_dtype(df_cleaned[col])
-                        or isinstance(df_cleaned[col].dtype, pd.CategoricalDtype)
-                        or df_cleaned[col].dtype.name == "string"]
-
-            # Detect high-cardinality columns
-            high_card_cols = [col for col in cat_cols if df_cleaned[col].nunique() > 50]
-            if high_card_cols:
-                st.warning(f"High-cardinality categorical columns detected: {', '.join(high_card_cols)}. "
-                        "One-Hot Encoding may create too many columns. Consider Label Encoding instead.")
-
-            if not cat_cols:
-                st.info("No categorical columns detected.")
-            else:
-                selected_encoding = st.selectbox(
-                    "Select encoding method:",
-                    ["No Action", "Label Encoding", "Ordinal Encoding", "One-Hot Encoding"]
-                )
-                selected_columns = st.multiselect("Select categorical columns to encode:", cat_cols)
-
-                if selected_encoding == "Ordinal Encoding":
-                    st.markdown("*Optional: Enter custom order for each selected column (comma-separated). Leave blank for default alphabetical order.*")
-
-                try:
-                    for col in selected_columns:
-                        # 🔒 Skip already encoded (numeric) columns
-                        if is_numeric_dtype(df_cleaned[col]):
-                            st.warning(f"Column `{col}` appears to be numeric already. Skipping encoding.")
+                    if encoding_type == "Label Encoding":
+                        le = LabelEncoder()
+                        df_working[col] = le.fit_transform(df_working[col].astype(str))
+                    elif encoding_type == "Ordinal Encoding":
+                        custom_order = st.text_input(f"Order for `{col}` (comma-separated):", key=f"order_{col}")
+                        categories = [x.strip() for x in custom_order.split(",")] if custom_order else sorted(df_working[col].dropna().unique())
+                        oe = OrdinalEncoder(categories=[categories])
+                        df_working[col] = oe.fit_transform(df_working[[col]].astype(str))
+                    elif encoding_type == "One-Hot Encoding":
+                        if df_working[col].nunique() > 50:
+                            st.warning(f"Skipping `{col}` — too many categories.")
                             continue
+                        df_working = pd.get_dummies(df_working, columns=[col], drop_first=True)
+                if selected_cols and encoding_type != "No Action":
+                    st.success("Encoding applied.")
+                    st.dataframe(df_working.head())
+            except Exception as e:
+                st.error(f"Encoding failed: {e}")
 
-                        if selected_encoding == "Label Encoding":
-                            le = LabelEncoder()
-                            df_cleaned[col] = le.fit_transform(df_cleaned[col].astype(str))
-                            st.write(f"`{col}` encoded with **Label Encoding**.")
+    # -------------------------------
+    # Outlier Detection & Handling
+    # -------------------------------
+    from scipy import stats
+    with st.expander("Outlier Detection & Handling", expanded=False):
+        numeric_cols = df_working.select_dtypes(include=np.number).columns.tolist()
 
-                        elif selected_encoding == "Ordinal Encoding":
-                            custom_order = st.text_input(f"Custom order for `{col}` (comma-separated)", key=f"order_{col}")
-                            if custom_order:
-                                categories = [x.strip() for x in custom_order.split(",")]
-                                oe = OrdinalEncoder(categories=[categories])
-                            else:
-                                sorted_categories = sorted(df_cleaned[col].dropna().unique())
-                                oe = OrdinalEncoder(categories=[sorted_categories])
-                            df_cleaned[col] = oe.fit_transform(df_cleaned[[col]].astype(str))
-                            st.write(f"`{col}` encoded with **Ordinal Encoding**.")
+        if not numeric_cols:
+            st.info("No numeric columns available for outlier detection.")
+        else:
+            method = st.radio("Choose outlier detection method:", ["IQR", "Z-Score"])
+            selected_cols = st.multiselect("Select columns to check for outliers:", numeric_cols)
+            action = st.radio("What should be done with detected outliers?", ["Remove", "Cap (Clip)"])
 
-                        elif selected_encoding == "One-Hot Encoding":
-                            if df_cleaned[col].nunique() > 50:
-                                st.warning(f"Skipping `{col}` — it has {df_cleaned[col].nunique()} unique categories. One-hot encoding would create too many columns.")
-                                continue
-                            df_cleaned = pd.get_dummies(df_cleaned, columns=[col], drop_first=True)
-                            st.write(f"`{col}` encoded with **One-Hot Encoding**.")
-
-                    if selected_encoding != "No Action" and selected_columns:
-                        st.success("Encoding completed.")
-                        st.markdown("#### Preview After Encoding")
-                        st.dataframe(df_cleaned.head(10))
-
-                except Exception as e:
-                    st.error(f"Encoding failed: {str(e)}")
-
-
-
-        # ✅ Save the updates back to session state
-        if df_cleaned is not None:
-            st.session_state.cleaned_df = df_cleaned.copy()
-
-        st.markdown(get_clickable_markdown_download_link(
-        st.session_state.cleaned_df, 
-        text="Download Cleaned Dataset"
-        ), unsafe_allow_html=True)
-
-        # -------------------------------
-        # Outlier Detection & Handling
-        # -------------------------------
-        from scipy import stats
-
-        with st.expander("Outlier Detection & Handling", expanded=False):
-            st.markdown("""
-            ℹ️ **About Outlier Detection Methods**
-
-            - **IQR (Interquartile Range)**: Flags values that fall **1.5×IQR** outside the 25th–75th percentile range.
-            - **Z-Score**: Flags values that are **more than X standard deviations** from the mean.
-
-            > Use IQR for **skewed datasets**.  
-            > Use Z-score for **normally distributed data**.
-            """)
-
-            numeric_cols = df_cleaned.select_dtypes(include=np.number).columns.tolist()
-
-            if not numeric_cols:
-                st.info("No numeric columns available for outlier detection.")
-            else:
-                method = st.radio("Choose outlier detection method:", ["IQR", "Z-Score"])
-                selected_cols = st.multiselect("Select columns to check for outliers:", numeric_cols)
-
-                action = st.radio("What should be done with detected outliers?", ["Remove", "Cap (Clip)"])
-
-                if selected_cols:
+            if selected_cols:
+                try:
                     if method == "IQR":
                         for col in selected_cols:
-                            Q1 = df_cleaned[col].quantile(0.25)
-                            Q3 = df_cleaned[col].quantile(0.75)
+                            Q1 = df_working[col].quantile(0.25)
+                            Q3 = df_working[col].quantile(0.75)
                             IQR = Q3 - Q1
-                            lower_bound = Q1 - 1.5 * IQR
-                            upper_bound = Q3 + 1.5 * IQR
-                            st.write(f"`{col}` → Lower: {lower_bound:.2f}, Upper: {upper_bound:.2f}")
+                            lower = Q1 - 1.5 * IQR
+                            upper = Q3 + 1.5 * IQR
 
                             if action == "Remove":
-                                df_cleaned = df_cleaned[(df_cleaned[col] >= lower_bound) & (df_cleaned[col] <= upper_bound)]
+                                df_working = df_working[(df_working[col] >= lower) & (df_working[col] <= upper)]
                             elif action == "Cap (Clip)":
-                                df_cleaned[col] = df_cleaned[col].clip(lower=lower_bound, upper=upper_bound)
+                                df_working[col] = df_working[col].clip(lower, upper)
 
                     elif method == "Z-Score":
                         threshold = st.slider("Z-score threshold", 1.0, 5.0, 3.0)
-                        z_scores = np.abs(stats.zscore(df_cleaned[selected_cols]))
+                        z_scores = np.abs(stats.zscore(df_working[selected_cols]))
                         mask = (z_scores < threshold).all(axis=1)
 
                         if action == "Remove":
-                            df_cleaned = df_cleaned[mask]
+                            df_working = df_working[mask]
                         elif action == "Cap (Clip)":
                             for col in selected_cols:
-                                col_z = stats.zscore(df_cleaned[col])
-                                df_cleaned[col] = np.where(
+                                col_z = stats.zscore(df_working[col])
+                                df_working[col] = np.where(
                                     np.abs(col_z) > threshold,
-                                    np.sign(col_z) * threshold * df_cleaned[col].std() + df_cleaned[col].mean(),
-                                    df_cleaned[col]
+                                    np.sign(col_z) * threshold * df_working[col].std() + df_working[col].mean(),
+                                    df_working[col]
                                 )
-
                     st.success("Outlier handling applied successfully.")
-                    st.markdown("#### Preview After Outlier Handling")
-                    st.dataframe(df_cleaned.head(50))
-
-        # ✅ Update session state after outlier step
-        if df_cleaned is not None:
-            st.session_state.cleaned_df = df_cleaned.copy()
-        
-
-        # -------------------------------
-        # Feature Selection (Supervised + Unsupervised)
-        # -------------------------------
-        
-        with st.expander("Feature Selection (Supervised + Unsupervised)", expanded=False):
-            st.markdown("You can apply both **unsupervised** (statistical) and **supervised** (target-aware) feature selection methods.")
-
-            method_type = st.radio("Choose method type:", ["Unsupervised", "Supervised"])
-
-            numeric_cols = df_cleaned.select_dtypes(include=np.number).columns.tolist()
-
-            if method_type == "Unsupervised":
-                st.subheader("Unsupervised Filters")
-
-                # Low Variance
-                low_var_thresh = st.slider("Variance threshold (remove features below this)", 0.0, 1.0, 0.0)
-                low_var_cols = []
-                if low_var_thresh > 0:
-                    for col in numeric_cols:
-                        if df_cleaned[col].var() < low_var_thresh:
-                            low_var_cols.append(col)
-                    if low_var_cols:
-                        st.warning(f"Low variance columns: {low_var_cols}")
-                        if st.button("Remove Low Variance Columns"):
-                            df_cleaned.drop(columns=low_var_cols, inplace=True)
-                            st.success("Low variance columns removed.")
-
-                # High Correlation
-                corr_thresh = st.slider("Correlation threshold", 0.5, 1.0, 0.9)
-                if corr_thresh < 1.0 and len(numeric_cols) > 1:
-                    corr_matrix = df_cleaned[numeric_cols].corr().abs()
-                    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-                    to_drop = [col for col in upper.columns if any(upper[col] > corr_thresh)]
-                    if to_drop:
-                        st.warning(f"Highly correlated columns: {to_drop}")
-                        if st.button("Remove Correlated Columns"):
-                            df_cleaned.drop(columns=to_drop, inplace=True)
-                            st.success("Correlated columns removed.")
-
-            elif method_type == "Supervised":
-                st.subheader("Supervised Selection (requires target)")
-
-                target_col = st.selectbox("Select target column:", df_cleaned.columns)
-                if not target_col:
-                    st.warning("Please select a target column for supervised feature selection.")
-                    st.stop()
-
-                if df_cleaned[target_col].isnull().sum() > 0:
-                    st.error("Target column contains missing values. Please handle them before applying feature selection.")
-                    st.stop()
-
-                supervised_features = [col for col in df_cleaned.columns if col != target_col and is_numeric_dtype(df_cleaned[col])]
-
-                selection_method = st.radio("Select method", ["ANOVA F-test", "Mutual Information"])
-                k = st.slider("Number of top features to keep", 1, len(supervised_features), min(5, len(supervised_features)))
-
-                try:
-                    X = df_cleaned[supervised_features]
-                    y = df_cleaned[target_col]
-
-                    # ✅ Check for NaNs first
-                    if X.isnull().sum().sum() > 0 or y.isnull().sum() > 0:
-                        st.error("Missing values detected. Please handle missing values in the 'Handle Missing Values' section above before applying supervised feature selection.")
-                    else:
-                        # Encode target if it's categorical
-                        if y.dtype == 'object' or y.dtype.name == 'category' or y.dtype == 'string':
-                            y = LabelEncoder().fit_transform(y.astype(str))
-
-                        if selection_method == "ANOVA F-test":
-                            selector = SelectKBest(score_func=f_classif, k=k)
-                        else:
-                            selector = SelectKBest(score_func=mutual_info_classif, k=k)
-
-                        selector.fit(X, y)
-                        mask = selector.get_support()
-                        selected = X.columns[mask].tolist()
-
-                        st.success(f"Top {k} selected features: {selected}")
-                        if st.button("Keep Selected Features Only"):
-                            df_cleaned = df_cleaned[selected + [target_col]]
-                            st.success("Filtered dataset to selected features.")
+                    st.dataframe(df_working.head())
                 except Exception as e:
-                    st.error(f"Feature selection failed: {str(e)}")
-
-
-            st.markdown("#### Preview After Feature Selection")
-            st.dataframe(df_cleaned.head(50))
-
-            if df_cleaned is not None:
-                st.session_state.cleaned_df = df_cleaned.copy()
-
-        # -------------------------------
-        # Feature Engineering
-        # -------------------------------
-        with st.expander("Feature Engineering", expanded=False):
-            st.markdown("Transform existing columns or extract new ones to boost model performance.")
-
-            # -------------------------------
-            # 1. Numeric Column Transformations
-            # -------------------------------
-            numeric_cols = df_cleaned.select_dtypes(include=np.number).columns.tolist()
-            if numeric_cols:
-                st.markdown("##### 🔢 Numerical Transformations")
-                selected_numeric = st.multiselect("Select numeric columns to transform:", numeric_cols)
-
-                if selected_numeric:
-                    transform_ops = st.multiselect("Select transformations to apply:", ["Square", "Square Root", "Log"])
-
-                    for col in selected_numeric:
-                        if "Square" in transform_ops:
-                            df_cleaned[f"{col}_squared"] = df_cleaned[col] ** 2
-                        if "Square Root" in transform_ops:
-                            df_cleaned[f"{col}_sqrt"] = df_cleaned[col].apply(lambda x: np.sqrt(x) if x >= 0 else np.nan)
-                        if "Log" in transform_ops:
-                            df_cleaned[f"{col}_log"] = df_cleaned[col].apply(lambda x: np.log1p(x) if x >= 0 else np.nan)
-                    st.success("Numeric transformations applied.")
-
-            if df_cleaned is not None:
-                st.session_state.cleaned_df = df_cleaned.copy()
-
-    
-
-            # -------------------------------
-            # 3. Text Feature Extraction
-            # -------------------------------
-            text_cols = [col for col in df_cleaned.columns if is_object_dtype(df_cleaned[col]) and df_cleaned[col].nunique() < len(df_cleaned)]
-    
-            if text_cols:
-                st.markdown("##### 🔤 Text Features")
-                selected_text_cols = st.multiselect("Select text columns to extract features from:", text_cols)
-
-                for col in selected_text_cols:
-                    non_empty = df_cleaned[col].dropna().astype(str).str.strip()
-                    if non_empty.eq("").all():
-                        st.warning(f"Column `{col}` is empty or contains only missing values. Skipping text feature extraction.")
-                        continue
-                    df_cleaned[f"{col}_char_count"] = df_cleaned[col].astype(str).apply(len)
-                    df_cleaned[f"{col}_word_count"] = df_cleaned[col].astype(str).apply(lambda x: len(str(x).split()))
-                    df_cleaned[f"{col}_avg_word_len"] = df_cleaned[col].astype(str).apply(lambda x: np.mean([len(w) for w in str(x).split()]) if len(str(x).split()) > 0 else 0)
-                if selected_text_cols:
-                    st.success("Text features extracted.")
-
-            # ✅ Update session state
-            st.markdown("#### Preview After Feature Engineering")
-            st.dataframe(df_cleaned.head(50))
-
-            if df_cleaned is not None:
-                st.session_state.cleaned_df = df_cleaned.copy()
-           
+                    st.error(f"Outlier handling failed: {e}")
         
+    # -------------------------------
+    # Feature Selection (Supervised + Unsupervised)
+    # -------------------------------
+    with st.expander("Feature Selection (Supervised + Unsupervised)", expanded=False):
+        st.markdown("You can apply both **unsupervised** (statistical) and **supervised** (target-aware) feature selection methods.")
 
-        # -------------------------------
-        # Class Imbalance Handling
-        # -------------------------------
-        
+        method_type = st.radio("Choose method type:", ["Unsupervised", "Supervised"])
+        numeric_cols = df_working.select_dtypes(include=np.number).columns.tolist()
 
-        with st.expander("Class Imbalance Handling", expanded=False):
-            st.markdown("Handle datasets where one class heavily outnumbers another (like fraud detection).")
+        if method_type == "Unsupervised":
+            st.subheader("Unsupervised Filters")
 
-            all_cols = df_cleaned.columns.tolist()
-            target_col = st.selectbox("Select target column:", all_cols)
+            low_var_thresh = st.slider("Variance threshold (remove features below this)", 0.0, 1.0, 0.0)
+            low_var_cols = []
+            if low_var_thresh > 0:
+                for col in numeric_cols:
+                    if df_working[col].var() < low_var_thresh:
+                        low_var_cols.append(col)
+                if low_var_cols:
+                    st.warning(f"Low variance columns: {low_var_cols}")
+                    if st.button("Remove Low Variance Columns"):
+                        df_working.drop(columns=low_var_cols, inplace=True)
+                        st.success("Low variance columns removed.")
 
-            # Detect classification task only
-            if is_numeric_dtype(df_cleaned[target_col]) and df_cleaned[target_col].nunique() > 15:
-                st.warning("This looks like a regression problem — imbalance handling is only for classification tasks.")
-            else:
-                imbalance_method = st.radio("Choose balancing method:", ["SMOTE", "Random OverSampling", "Random UnderSampling"])
+            corr_thresh = st.slider("Correlation threshold", 0.5, 1.0, 0.9)
+            if corr_thresh < 1.0 and len(numeric_cols) > 1:
+                corr_matrix = df_working[numeric_cols].corr().abs()
+                upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                to_drop = [col for col in upper.columns if any(upper[col] > corr_thresh)]
+                if to_drop:
+                    st.warning(f"Highly correlated columns: {to_drop}")
+                    if st.button("Remove Correlated Columns"):
+                        df_working.drop(columns=to_drop, inplace=True)
+                        st.success("Correlated columns removed.")
 
-                # Show class distribution before
-                st.markdown("**Class distribution before balancing:**")
-                st.write(dict(Counter(df_cleaned[target_col])))
+        elif method_type == "Supervised":
+            st.subheader("Supervised Selection (requires target)")
 
-                if st.button("Apply Balancing"):
-                    
+            target_col = st.selectbox("Select target column:", df_working.columns)
+            if not target_col:
+                st.warning("Please select a target column.")
+                st.stop()
 
-                    try:
-                        with st.spinner("Applying class balancing..."):
-                            X = df_cleaned.drop(columns=[target_col])
-                            y = df_cleaned[target_col]
+            if df_working[target_col].isnull().sum() > 0:
+                st.error("Target column has missing values. Handle them before applying feature selection.")
+                st.stop()
 
-                            # Convert categorical y if needed
-                            if y.dtype == "object" or y.dtype.name == "category" or y.dtype == "string":
-                                y = LabelEncoder().fit_transform(y)
+            supervised_features = [col for col in df_working.columns if col != target_col and is_numeric_dtype(df_working[col])]
+            selection_method = st.radio("Select method", ["ANOVA F-test", "Mutual Information"])
+            k = st.slider("Number of top features to keep", 1, len(supervised_features), min(5, len(supervised_features)))
 
-                            if imbalance_method == "SMOTE":
-                                sampler = SMOTE(random_state=42)
-                            elif imbalance_method == "Random OverSampling":
-                                sampler = RandomOverSampler(random_state=42)
-                            else:
-                                sampler = RandomUnderSampler(random_state=42)
+            try:
+                X = df_working[supervised_features]
+                y = df_working[target_col]
 
-                            X_resampled, y_resampled = sampler.fit_resample(X, y)
+                if X.isnull().sum().sum() > 0 or y.isnull().sum() > 0:
+                    st.error("Missing values in features or target. Please clean your data.")
+                else:
+                    if y.dtype in ['object', 'category', 'string']:
+                        y = LabelEncoder().fit_transform(y.astype(str))
 
-                            df_cleaned = pd.DataFrame(X_resampled, columns=X.columns)
-                            df_cleaned[target_col] = y_resampled
+                    selector = SelectKBest(score_func=f_classif if selection_method == "ANOVA F-test" else mutual_info_classif, k=k)
+                    selector.fit(X, y)
+                    selected = X.columns[selector.get_support()].tolist()
 
-                            st.success("Class balancing applied successfully.")
-                            st.markdown("**Class distribution after balancing:**")
-                            st.write(dict(Counter(y_resampled)))
-                            st.dataframe(df_cleaned.head())
+                    st.success(f"Top {k} selected features: {selected}")
+                    if st.button("Keep Selected Features Only"):
+                        df_working = df_working[selected + [target_col]]
+                        st.success("Filtered dataset to selected features.")
+            except Exception as e:
+                st.error(f"Feature selection failed: {e}")
 
-                            # ✅ Save to session
-                            if df_cleaned is not None:
-                                st.session_state.cleaned_df = df_cleaned.copy()
-                    
-                    except Exception as e:
-                        st.error(f"Balancing failed: {e}")
+        st.markdown("#### Preview After Feature Selection")
+        st.dataframe(df_working.head())
+
+    # -------------------------------
+    # Feature Engineering
+    # -------------------------------
+    with st.expander("Feature Engineering", expanded=False):
+        st.markdown("Transform existing columns or extract new ones to boost model performance.")
+
+        numeric_cols = df_working.select_dtypes(include=np.number).columns.tolist()
+        if numeric_cols:
+            st.markdown("##### 🔢 Numerical Transformations")
+            selected_numeric = st.multiselect("Select numeric columns to transform:", numeric_cols)
+
+            if selected_numeric:
+                transform_ops = st.multiselect("Select transformations to apply:", ["Square", "Square Root", "Log"])
+
+                for col in selected_numeric:
+                    if "Square" in transform_ops:
+                        df_working[f"{col}_squared"] = df_working[col] ** 2
+                    if "Square Root" in transform_ops:
+                        df_working[f"{col}_sqrt"] = df_working[col].apply(lambda x: np.sqrt(x) if x >= 0 else np.nan)
+                    if "Log" in transform_ops:
+                        df_working[f"{col}_log"] = df_working[col].apply(lambda x: np.log1p(x) if x >= 0 else np.nan)
+                st.success("Numeric transformations applied.")
+
+        text_cols = [col for col in df_working.columns if is_object_dtype(df_working[col]) and df_working[col].nunique() < len(df_working)]
+        if text_cols:
+            st.markdown("##### 🔤 Text Features")
+            selected_text_cols = st.multiselect("Select text columns to extract features from:", text_cols)
+
+            for col in selected_text_cols:
+                non_empty = df_working[col].dropna().astype(str).str.strip()
+                if non_empty.eq("").all():
+                    st.warning(f"Column `{col}` is empty or only missing. Skipping.")
+                    continue
+                df_working[f"{col}_char_count"] = df_working[col].astype(str).apply(len)
+                df_working[f"{col}_word_count"] = df_working[col].astype(str).apply(lambda x: len(str(x).split()))
+                df_working[f"{col}_avg_word_len"] = df_working[col].astype(str).apply(lambda x: np.mean([len(w) for w in str(x).split()]) if len(str(x).split()) > 0 else 0)
+            if selected_text_cols:
+                st.success("Text features extracted.")
+        st.dataframe(df_working.head())
+
+    # -------------------------------
+    # Drop High-Cardinality Non-Numeric Columns (ID-like)
+    # -------------------------------
+    with st.expander("Drop ID-like / High-Cardinality String Columns", expanded=False):
+        text_cols = [col for col in df_working.columns if is_object_dtype(df_working[col]) or df_working[col].dtype.name in ['string', 'category']]
+        id_like_cols = [col for col in text_cols if df_working[col].nunique() > 0.9 * len(df_working)]
+
+        if id_like_cols:
+            st.warning(f"High-cardinality string columns detected: {', '.join(id_like_cols)}")
+            selected = st.multiselect("Select columns to drop", id_like_cols, default=id_like_cols)
+
+            if selected and st.button("Drop Selected Columns"):
+                df_working.drop(columns=selected, inplace=True)
+                st.success("Selected columns dropped.")
+                st.dataframe(df_working.head())
+        else:
+            st.info("No ID-like columns detected.")
+
+    # -------------------------------
+    # Class Imbalance Handling
+    # -------------------------------
+
+    with st.expander("Class Imbalance Handling", expanded=False):
+        st.markdown("Handle datasets where one class heavily outnumbers another (like fraud detection).")
+
+        all_cols = df_working.columns.tolist()
+        target_col = st.selectbox("Select target column:", all_cols)
+
+        # Detect classification task only
+        if is_numeric_dtype(df_working[target_col]) and df_working[target_col].nunique() > 15:
+            st.warning("This looks like a regression problem — imbalance handling is only for classification tasks.")
+        else:
+            imbalance_method = st.radio("Choose balancing method:", ["SMOTE", "Random OverSampling", "Random UnderSampling"])
+
+            # Show class distribution before
+            st.markdown("**Class distribution before balancing:**")
+            st.write(dict(Counter(df_working[target_col])))
+
+            if st.button("Apply Balancing"):
+                try:
+                    with st.spinner("Applying class balancing..."):
+                        X = df_working.drop(columns=[target_col])
+                        y = df_working[target_col]
+
+                        # Convert categorical y if needed
+                        if y.dtype == "object" or y.dtype.name == "category" or y.dtype == "string":
+                            y = LabelEncoder().fit_transform(y)
+
+                        if imbalance_method == "SMOTE":
+                            sampler = SMOTE(random_state=42)
+                        elif imbalance_method == "Random OverSampling":
+                            sampler = RandomOverSampler(random_state=42)
+                        else:
+                            sampler = RandomUnderSampler(random_state=42)
+
+                        X_resampled, y_resampled = sampler.fit_resample(X, y)
+
+                        df_working = pd.DataFrame(X_resampled, columns=X.columns)
+                        df_working[target_col] = y_resampled
+
+                        st.success("Class balancing applied successfully.")
+                        st.markdown("**Class distribution after balancing:**")
+                        st.write(dict(Counter(y_resampled)))
+                        st.dataframe(df_working.head())
+                except Exception as e:
+                    st.error(f"Balancing failed: {e}")
+
+
+    with st.expander("Preview: Original vs Modified", expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**Original Cleaned Data:**")
+            st.dataframe(st.session_state["cleaned_df"].head())
+
+        with col2:
+            st.markdown("**Modified Preprocessed Data:**")
+            st.dataframe(df_working.head())
+   
+    #Final Apply of Pre-Processing Steps
+
+    st.subheader("Finalize Preprocessing")
+
+    col1, col2, col3 = st.columns([1, 1, 1])
+
+    with col1:
+        if st.button("Apply All Preprocessing Steps"):
+            # 🔁 Backup before overwrite
+            st.session_state["cleaned_df_backup"] = st.session_state["cleaned_df"].copy()
+            st.session_state["cleaned_df"] = df_working.copy()
+            st.success("Changes have been applied to the cleaned dataset.")
+            st.rerun()
+
+    with col2:
+        if st.button("Discard Changes"):
+            st.warning("All changes discarded. Reloaded the last committed version.")
+            st.rerun()
+
+    with col3:
+        if "cleaned_df_backup" in st.session_state:
+            if st.button("Revert to Previous Committed Version"):
+                st.session_state["cleaned_df"] = st.session_state["cleaned_df_backup"].copy()
+                st.success("Restored previous version of the dataset.")
+                st.rerun()
 
     
 # TODO: Missing value handling, scaling, encoding, download
