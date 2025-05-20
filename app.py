@@ -555,6 +555,9 @@ elif st.session_state.active_tab == 1:
 # ---- Tab 2 ----
 elif st.session_state.active_tab == 2:
 
+    if "cleaned_df" not in st.session_state or st.session_state["cleaned_df"] is None:
+        st.warning("Please upload and clean a dataset in Tab 0 before preprocessing.")
+        st.stop()
     # 🧠 Start Tab 2 logic
     df_working = st.session_state["cleaned_df"].copy()
 
